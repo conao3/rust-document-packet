@@ -1,5 +1,5 @@
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     fs,
     io::Write,
     path::{Path, PathBuf},
@@ -421,6 +421,26 @@ fn append_page_content(document: &mut Document, page: ObjectId, data: Vec<u8>) -
     Ok(())
 }
 
+fn isolate_page_content(document: &mut Document, page: ObjectId) -> Result<()> {
+    let prefix = document.add_object(Stream::new(Dictionary::new(), b"q\n".to_vec()));
+    let suffix = document.add_object(Stream::new(Dictionary::new(), b"Q\n".to_vec()));
+    let page_dictionary = document
+        .get_object_mut(page)
+        .map_err(|error| error.to_string())?
+        .as_dict_mut()
+        .map_err(|error| error.to_string())?;
+    let existing = page_dictionary.get(b"Contents").ok().cloned();
+    let mut contents = vec![Object::Reference(prefix)];
+    match existing {
+        None => {}
+        Some(Object::Array(items)) => contents.extend(items),
+        Some(object) => contents.push(object),
+    }
+    contents.push(Object::Reference(suffix));
+    page_dictionary.set("Contents", Object::Array(contents));
+    Ok(())
+}
+
 fn install_image(
     document: &mut Document,
     page: ObjectId,
@@ -535,6 +555,7 @@ fn apply_manifest(resolved: &ResolvedManifest) -> Result<ApplyReport> {
 
     let mut document = Document::load(&resolved.source)
         .map_err(|error| format!("{}: {error}", resolved.source.display()))?;
+    let mut isolated_pages = BTreeSet::new();
     for (index, operation) in resolved.manifest.operations.iter().enumerate() {
         let marker = format!("% document-packet:op-{}\n", index + 1);
         match operation {
@@ -547,6 +568,9 @@ fn apply_manifest(resolved: &ResolvedManifest) -> Result<ApplyReport> {
                 ..
             } => {
                 let page_id = page_id(&document, *page)?;
+                if isolated_pages.insert(page_id) {
+                    isolate_page_content(&mut document, page_id)?;
+                }
                 let resource = format!("DPImg{}", index + 1);
                 let image_path = resolved.operation_images.get(&index).unwrap();
                 install_image(&mut document, page_id, &resource, image_path)?;
@@ -567,6 +591,9 @@ fn apply_manifest(resolved: &ResolvedManifest) -> Result<ApplyReport> {
                 size,
             } => {
                 let page_id = page_id(&document, *page)?;
+                if isolated_pages.insert(page_id) {
+                    isolate_page_content(&mut document, page_id)?;
+                }
                 install_helvetica(&mut document, page_id)?;
                 append_page_content(
                     &mut document,
@@ -719,35 +746,58 @@ fn render_pdf(args: RenderArgs) -> Result<()> {
     inspect_pdf(&args.pdf)?;
     fs::create_dir_all(&args.out_dir)
         .map_err(|error| format!("{}: {error}", args.out_dir.display()))?;
-    let output_pattern = args.out_dir.join(format!("{}-%03d.png", args.prefix));
-    let status = Command::new("gs")
-        .arg("-q")
-        .arg("-dSAFER")
-        .arg("-dBATCH")
-        .arg("-dNOPAUSE")
-        .arg("-sDEVICE=pngalpha")
-        .arg(format!("-r{}", args.dpi))
-        .arg(format!("-sOutputFile={}", output_pattern.display()))
-        .arg(&args.pdf)
-        .status()
-        .map_err(|error| format!("failed to run Ghostscript: {error}"))?;
-    if !status.success() {
-        return Err(format!("Ghostscript exited with {status}"));
+    for entry in fs::read_dir(&args.out_dir).map_err(|error| error.to_string())? {
+        let entry = entry.map_err(|error| error.to_string())?;
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if rendered_page_number(&name, &args.prefix).is_some() {
+            fs::remove_file(entry.path()).map_err(|error| error.to_string())?;
+        }
     }
-    let count = fs::read_dir(&args.out_dir)
+    let output_prefix = args.out_dir.join(&args.prefix);
+    let status = Command::new("pdftoppm")
+        .arg("-png")
+        .arg("-r")
+        .arg(args.dpi.to_string())
+        .arg(&args.pdf)
+        .arg(&output_prefix)
+        .status()
+        .map_err(|error| format!("failed to run pdftoppm: {error}"))?;
+    if !status.success() {
+        return Err(format!("pdftoppm exited with {status}"));
+    }
+    let mut rendered = fs::read_dir(&args.out_dir)
         .map_err(|error| error.to_string())?
         .filter_map(|entry| entry.ok())
-        .filter(|entry| {
-            entry.file_name().to_str().is_some_and(|name| {
-                name.starts_with(&format!("{}-", args.prefix)) && name.ends_with(".png")
-            })
+        .filter_map(|entry| {
+            let name = entry.file_name();
+            let page = rendered_page_number(&name.to_string_lossy(), &args.prefix)?;
+            Some((page, entry.path()))
         })
-        .count();
-    if count == 0 {
-        return Err("Ghostscript produced no PNG pages".to_string());
+        .collect::<Vec<_>>();
+    rendered.sort_by_key(|(page, _)| *page);
+    if rendered.is_empty() {
+        return Err("pdftoppm produced no PNG pages".to_string());
     }
-    println!("rendered {count} page(s) into {}", args.out_dir.display());
+    for (page, source) in &rendered {
+        let destination = args.out_dir.join(format!("{}-{page:03}.png", args.prefix));
+        if source != &destination {
+            fs::rename(source, destination).map_err(|error| error.to_string())?;
+        }
+    }
+    println!(
+        "rendered {} page(s) into {}",
+        rendered.len(),
+        args.out_dir.display()
+    );
     Ok(())
+}
+
+fn rendered_page_number(name: &str, prefix: &str) -> Option<u32> {
+    name.strip_prefix(&format!("{prefix}-"))?
+        .strip_suffix(".png")?
+        .parse()
+        .ok()
 }
 
 #[cfg(test)]
@@ -833,6 +883,36 @@ mod tests {
         assert_eq!(report.operations, 2);
         assert_eq!(fs::read(&resolved.source).unwrap(), source_before);
         verify_manifest(&resolved).unwrap();
+
+        let output_document = Document::load(&resolved.output).unwrap();
+        let output_page = page_id(&output_document, 1).unwrap();
+        let contents = output_document
+            .get_object(output_page)
+            .unwrap()
+            .as_dict()
+            .unwrap()
+            .get(b"Contents")
+            .unwrap()
+            .as_array()
+            .unwrap();
+        let stream_data = |object: &Object| {
+            let id = object.as_reference().unwrap();
+            output_document
+                .get_object(id)
+                .unwrap()
+                .as_stream()
+                .unwrap()
+                .content
+                .clone()
+        };
+        assert_eq!(stream_data(&contents[0]), b"q\n");
+        assert_eq!(stream_data(&contents[2]), b"Q\n");
+        assert!(
+            String::from_utf8_lossy(&stream_data(&contents[3])).contains("document-packet:op-1")
+        );
+        assert!(
+            String::from_utf8_lossy(&stream_data(&contents[4])).contains("document-packet:op-2")
+        );
     }
 
     #[test]

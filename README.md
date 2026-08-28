@@ -11,7 +11,7 @@ document-packet apply --manifest .claude-dev/task/document-packet.json
 document-packet verify --manifest .claude-dev/task/document-packet.json
 ```
 
-`apply` は既存 PDF の page tree と内容を保ち、指定ページへ透明 PNG/JPEG と Helvetica の ASCII text を追加する。source/output が同じ manifest は拒否する。完了時に source hash が変わっていないこと、page count・MediaBox・rotation、各 operation marker/resource、サイズ条件を `verify` する。`render` は Ghostscript で全ページを PNG 化する。
+`apply` は既存 PDF の page tree と内容を保ち、指定ページへ透明 PNG/JPEG と Helvetica の ASCII text を追加する。source/output が同じ manifest は拒否する。完了時に source hash が変わっていないこと、page count・MediaBox・rotation、各 operation marker/resource、サイズ条件を `verify` する。`render` は Poppler (`pdftoppm`) で全ページを PNG 化する。
 
 ## Manifest
 

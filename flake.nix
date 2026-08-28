@@ -16,14 +16,14 @@
           cargoLock.lockFile = ./Cargo.lock;
           nativeBuildInputs = [ pkgs.makeWrapper ];
           postInstall = ''
-            wrapProgram "$out/bin/document-packet" --prefix PATH : ${pkgs.lib.makeBinPath [ pkgs.ghostscript ]}
+            wrapProgram "$out/bin/document-packet" --prefix PATH : ${pkgs.lib.makeBinPath [ pkgs.poppler-utils ]}
           '';
         };
       });
 
       devShells = forAllSystems (pkgs: {
         default = pkgs.mkShell {
-          packages = [ pkgs.cargo pkgs.clippy pkgs.ghostscript pkgs.rustc pkgs.rustfmt ];
+          packages = [ pkgs.cargo pkgs.clippy pkgs.poppler-utils pkgs.rustc pkgs.rustfmt ];
         };
       });
     };
