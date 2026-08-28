@@ -1,0 +1,21 @@
+[package]
+name = "document-packet"
+version = "0.1.0"
+edition = "2021"
+description = "Reproducible PDF inspection, rendering, overlays, and verification"
+license = "MIT"
+repository = "https://github.com/conao3/rust-document-packet"
+
+[[bin]]
+name = "document-packet"
+path = "src/main.rs"
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+hex = "0.4"
+image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
+lopdf = "0.38"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+tempfile = "3"
