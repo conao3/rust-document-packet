@@ -1,30 +1,58 @@
 {
-  description = "document-packet Rust CLI";
+  description = "Reproducible PDF inspection, overlays, rendering, and verification";
 
-  inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+  inputs = {
+    nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+    flake-parts.url = "github:hercules-ci/flake-parts";
+    treefmt-nix.url = "github:numtide/treefmt-nix";
+  };
 
-  outputs = { nixpkgs, ... }:
-    let
-      systems = [ "x86_64-linux" "aarch64-darwin" ];
-      forAllSystems = f: nixpkgs.lib.genAttrs systems (system: f nixpkgs.legacyPackages.${system});
-    in {
-      packages = forAllSystems (pkgs: {
-        default = pkgs.rustPlatform.buildRustPackage {
-          pname = "document-packet";
-          version = "0.1.0";
-          src = ./.;
-          cargoLock.lockFile = ./Cargo.lock;
-          nativeBuildInputs = [ pkgs.makeWrapper ];
-          postInstall = ''
-            wrapProgram "$out/bin/document-packet" --prefix PATH : ${pkgs.lib.makeBinPath [ pkgs.poppler-utils ]}
-          '';
+  outputs =
+    inputs@{ flake-parts, ... }:
+    flake-parts.lib.mkFlake { inherit inputs; } {
+      systems = [
+        "x86_64-linux"
+        "aarch64-darwin"
+      ];
+
+      imports = [ inputs.treefmt-nix.flakeModule ];
+
+      perSystem =
+        { pkgs, ... }:
+        {
+          packages.default = pkgs.rustPlatform.buildRustPackage {
+            pname = "document-packet";
+            version = "0.1.0";
+            src = pkgs.lib.cleanSource ./.;
+            cargoLock.lockFile = ./Cargo.lock;
+            nativeBuildInputs = [ pkgs.makeWrapper ];
+            postInstall = ''
+              wrapProgram "$out/bin/document-packet" \
+                --prefix PATH : ${pkgs.lib.makeBinPath [ pkgs.poppler-utils ]}
+            '';
+            meta = {
+              description = "Build and verify reproducible PDF document packets";
+              homepage = "https://github.com/conao3/rust-document-packet";
+              license = pkgs.lib.licenses.mit;
+              mainProgram = "document-packet";
+              platforms = pkgs.lib.platforms.unix;
+            };
+          };
+
+          devShells.default = pkgs.mkShell {
+            packages = with pkgs; [
+              cargo
+              clippy
+              poppler-utils
+              rustc
+              rustfmt
+            ];
+          };
+
+          treefmt.programs = {
+            nixfmt.enable = true;
+            rustfmt.enable = true;
+          };
         };
-      });
-
-      devShells = forAllSystems (pkgs: {
-        default = pkgs.mkShell {
-          packages = [ pkgs.cargo pkgs.clippy pkgs.poppler-utils pkgs.rustc pkgs.rustfmt ];
-        };
-      });
     };
 }
