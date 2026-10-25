@@ -8,7 +8,7 @@ use std::{
 
 use clap::{Args, Parser, Subcommand};
 use image::GenericImageView;
-use lopdf::{Dictionary, Document, Object, ObjectId, Stream, dictionary};
+use lopdf::{dictionary, Dictionary, Document, Object, ObjectId, Stream};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -700,9 +700,7 @@ fn verify_manifest(resolved: &ResolvedManifest) -> Result<VerifyReport> {
             Operation::Image { page, .. } | Operation::Text { page, .. } => *page,
         };
         let page = page_id(&document, target_page)?;
-        let contents = document
-            .get_page_content(page)
-            .map_err(|error| error.to_string())?;
+        let contents = document.get_page_content(page);
         let marker = format!("document-packet:op-{}", index + 1);
         if !contents
             .windows(marker.len())
@@ -924,10 +922,8 @@ mod tests {
             r#"{"schema":1,"source":"same.pdf","output":"same.pdf","operations":[{"type":"text","page":1,"text":"署名","x":1,"y":1}]}"#,
         )
         .unwrap();
-        assert!(
-            load_manifest(&manifest_path)
-                .unwrap_err()
-                .contains("source and output")
-        );
+        assert!(load_manifest(&manifest_path)
+            .unwrap_err()
+            .contains("source and output"));
     }
 }
