@@ -8,7 +8,7 @@ use std::{
 
 use clap::{Args, Parser, Subcommand};
 use image::GenericImageView;
-use lopdf::{dictionary, Dictionary, Document, Object, ObjectId, Stream};
+use lopdf::{Dictionary, Document, Object, ObjectId, Stream, dictionary};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -922,8 +922,10 @@ mod tests {
             r#"{"schema":1,"source":"same.pdf","output":"same.pdf","operations":[{"type":"text","page":1,"text":"署名","x":1,"y":1}]}"#,
         )
         .unwrap();
-        assert!(load_manifest(&manifest_path)
-            .unwrap_err()
-            .contains("source and output"));
+        assert!(
+            load_manifest(&manifest_path)
+                .unwrap_err()
+                .contains("source and output")
+        );
     }
 }
