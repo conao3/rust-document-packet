@@ -1,65 +1,58 @@
+mod cli;
+
 use std::{
     collections::{BTreeMap, BTreeSet},
-    fs,
+    fmt, fs,
     io::Write,
     path::{Path, PathBuf},
     process::Command,
 };
 
-use clap::{Args, Parser, Subcommand};
 use image::GenericImageView;
 use lopdf::{Dictionary, Document, Object, ObjectId, Stream, dictionary};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-type Result<T> = std::result::Result<T, String>;
-
-#[derive(Parser)]
-#[command(
-    name = "document-packet",
-    version,
-    about = "Build and verify PDF document packets"
-)]
-struct Cli {
-    #[command(subcommand)]
-    command: Commands,
+#[derive(Debug)]
+enum Error {
+    Clap(clap::Error),
+    Usage(String),
+    Target(String),
+    Other(String),
 }
 
-#[derive(Subcommand)]
-enum Commands {
-    Inspect(InspectArgs),
-    Render(RenderArgs),
-    Apply(ManifestArgs),
-    Verify(ManifestArgs),
+impl Error {
+    fn exit_code(&self) -> i32 {
+        match self {
+            Error::Clap(_) | Error::Usage(_) => 252,
+            Error::Target(_) => 254,
+            Error::Other(_) => 255,
+        }
+    }
 }
 
-#[derive(Args)]
-struct InspectArgs {
-    #[arg(long)]
-    pdf: PathBuf,
-    #[arg(long)]
-    json: bool,
+impl fmt::Display for Error {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Error::Clap(error) => write!(formatter, "{}", error.render()),
+            Error::Usage(message) | Error::Target(message) | Error::Other(message) => {
+                formatter.write_str(message)
+            }
+        }
+    }
 }
 
-#[derive(Args)]
-struct RenderArgs {
-    #[arg(long)]
-    pdf: PathBuf,
-    #[arg(long)]
-    out_dir: PathBuf,
-    #[arg(long, default_value = "page")]
-    prefix: String,
-    #[arg(long, default_value_t = 144)]
-    dpi: u32,
+impl From<String> for Error {
+    fn from(message: String) -> Self {
+        Error::Target(message)
+    }
 }
 
-#[derive(Args)]
-struct ManifestArgs {
-    #[arg(long)]
-    manifest: PathBuf,
-    #[arg(long)]
-    json: bool,
+fn other(error: impl fmt::Display) -> Error {
+    Error::Other(error.to_string())
 }
+
+type Result<T> = std::result::Result<T, Error>;
 
 #[derive(Debug, Deserialize, Serialize)]
 struct Manifest {
@@ -102,16 +95,18 @@ fn default_font_size() -> f64 {
     10.0
 }
 
-#[derive(Debug, Serialize, Clone)]
+#[derive(Debug, Serialize, Clone, Default)]
+#[serde(rename_all = "PascalCase")]
 struct PdfInspection {
-    path: PathBuf,
+    pdf_file: PathBuf,
     sha256: String,
     bytes: u64,
     page_count: usize,
     pages: Vec<PageInspection>,
 }
 
-#[derive(Debug, Serialize, Clone)]
+#[derive(Debug, Serialize, Clone, Default)]
+#[serde(rename_all = "PascalCase")]
 struct PageInspection {
     page: u32,
     width_points: f64,
@@ -119,22 +114,31 @@ struct PageInspection {
     rotation: i64,
 }
 
-#[derive(Debug, Serialize)]
-struct ApplyReport {
-    source_sha256: String,
-    output_sha256: String,
-    output: PathBuf,
+#[derive(Debug, Serialize, Default)]
+#[serde(rename_all = "PascalCase")]
+struct RenderReport {
+    output_dir: PathBuf,
     page_count: usize,
-    operations: usize,
+    pages: Vec<RenderedPage>,
 }
 
-#[derive(Debug, Serialize)]
-struct VerifyReport {
+#[derive(Debug, Serialize, Default)]
+#[serde(rename_all = "PascalCase")]
+struct RenderedPage {
+    page: u32,
+    image_file: PathBuf,
+}
+
+#[derive(Debug, Serialize, Default)]
+#[serde(rename_all = "PascalCase")]
+struct PacketReport {
+    source_file: PathBuf,
     source_sha256: String,
+    output_file: PathBuf,
     output_sha256: String,
     output_bytes: u64,
     page_count: usize,
-    operations_verified: usize,
+    operation_count: usize,
 }
 
 #[derive(Debug)]
@@ -146,76 +150,7 @@ struct ResolvedManifest {
 }
 
 fn main() {
-    if let Err(error) = run() {
-        eprintln!("error: {error}");
-        std::process::exit(1);
-    }
-}
-
-fn run() -> Result<()> {
-    match Cli::parse().command {
-        Commands::Inspect(args) => {
-            let inspection = inspect_pdf(&args.pdf)?;
-            if args.json {
-                print_json(&inspection)?;
-            } else {
-                println!(
-                    "{}: {} page(s), {} bytes, sha256:{}",
-                    inspection.path.display(),
-                    inspection.page_count,
-                    inspection.bytes,
-                    inspection.sha256
-                );
-                for page in inspection.pages {
-                    println!(
-                        "  page {}: {:.2} x {:.2} pt, rotation {}",
-                        page.page, page.width_points, page.height_points, page.rotation
-                    );
-                }
-            }
-        }
-        Commands::Render(args) => render_pdf(args)?,
-        Commands::Apply(args) => {
-            let manifest = load_manifest(&args.manifest)?;
-            let report = apply_manifest(&manifest)?;
-            if args.json {
-                print_json(&report)?;
-            } else {
-                println!(
-                    "created {} ({} page(s), {} operation(s), sha256:{})",
-                    report.output.display(),
-                    report.page_count,
-                    report.operations,
-                    report.output_sha256
-                );
-            }
-        }
-        Commands::Verify(args) => {
-            let manifest = load_manifest(&args.manifest)?;
-            let report = verify_manifest(&manifest)?;
-            if args.json {
-                print_json(&report)?;
-            } else {
-                println!(
-                    "verified {}: {} page(s), {} operation(s), {} bytes, sha256:{}",
-                    manifest.output.display(),
-                    report.page_count,
-                    report.operations_verified,
-                    report.output_bytes,
-                    report.output_sha256
-                );
-            }
-        }
-    }
-    Ok(())
-}
-
-fn print_json<T: Serialize>(value: &T) -> Result<()> {
-    println!(
-        "{}",
-        serde_json::to_string_pretty(value).map_err(|error| error.to_string())?
-    );
-    Ok(())
+    std::process::exit(cli::main());
 }
 
 fn load_manifest(path: &Path) -> Result<ResolvedManifest> {
@@ -226,16 +161,21 @@ fn load_manifest(path: &Path) -> Result<ResolvedManifest> {
         return Err(format!(
             "unsupported manifest schema {}; expected 1",
             manifest.schema
-        ));
+        )
+        .into());
     }
     if manifest.operations.is_empty() {
-        return Err("manifest must contain at least one operation".to_string());
+        return Err("manifest must contain at least one operation"
+            .to_string()
+            .into());
     }
     let base = path.parent().unwrap_or_else(|| Path::new("."));
     let source = resolve_path(base, &manifest.source);
     let output = resolve_path(base, &manifest.output);
     if source == output {
-        return Err("source and output must be different files".to_string());
+        return Err("source and output must be different files"
+            .to_string()
+            .into());
     }
     let mut operation_images = BTreeMap::new();
     for (index, operation) in manifest.operations.iter().enumerate() {
@@ -248,10 +188,9 @@ fn load_manifest(path: &Path) -> Result<ResolvedManifest> {
                 ..
             } => {
                 if *page == 0 || *width <= 0.0 || *height <= 0.0 {
-                    return Err(format!(
-                        "operation {} has invalid page or dimensions",
-                        index + 1
-                    ));
+                    return Err(
+                        format!("operation {} has invalid page or dimensions", index + 1).into(),
+                    );
                 }
                 operation_images.insert(index, resolve_path(base, path));
             }
@@ -259,16 +198,16 @@ fn load_manifest(path: &Path) -> Result<ResolvedManifest> {
                 page, text, size, ..
             } => {
                 if *page == 0 || *size <= 0.0 || text.is_empty() {
-                    return Err(format!(
-                        "operation {} has invalid page, text, or size",
-                        index + 1
-                    ));
+                    return Err(
+                        format!("operation {} has invalid page, text, or size", index + 1).into(),
+                    );
                 }
                 if !text.is_ascii() {
                     return Err(format!(
                         "operation {} text must be ASCII when using the built-in Helvetica font",
                         index + 1
-                    ));
+                    )
+                    .into());
                 }
             }
         }
@@ -301,7 +240,7 @@ fn inspect_pdf(path: &Path) -> Result<PdfInspection> {
     for (page, id) in pages {
         let media_box = inherited_array(&document, id, b"MediaBox")?;
         if media_box.len() != 4 {
-            return Err(format!("page {page} MediaBox must contain four numbers"));
+            return Err(format!("page {page} MediaBox must contain four numbers").into());
         }
         let x0 = number(&document, &media_box[0])?;
         let y0 = number(&document, &media_box[1])?;
@@ -319,7 +258,7 @@ fn inspect_pdf(path: &Path) -> Result<PdfInspection> {
     }
     let metadata = fs::metadata(path).map_err(|error| format!("{}: {error}", path.display()))?;
     Ok(PdfInspection {
-        path: path.to_path_buf(),
+        pdf_file: path.to_path_buf(),
         sha256: sha256(path)?,
         bytes: metadata.len(),
         page_count: inspected.len(),
@@ -347,7 +286,7 @@ fn inherited_array(document: &Document, id: ObjectId, key: &[u8]) -> Result<Vec<
         })?
         .as_array()
         .cloned()
-        .map_err(|_| format!("{} is not an array", String::from_utf8_lossy(key)))
+        .map_err(|_| format!("{} is not an array", String::from_utf8_lossy(key)).into())
 }
 
 fn resolve_object(document: &Document, object: &Object) -> Result<Object> {
@@ -355,7 +294,7 @@ fn resolve_object(document: &Document, object: &Object) -> Result<Object> {
         Object::Reference(id) => document
             .get_object(*id)
             .cloned()
-            .map_err(|error| error.to_string()),
+            .map_err(|error| error.to_string().into()),
         other => Ok(other.clone()),
     }
 }
@@ -364,7 +303,7 @@ fn number(document: &Document, object: &Object) -> Result<f64> {
     match resolve_object(document, object)? {
         Object::Integer(value) => Ok(value as f64),
         Object::Real(value) => Ok(value as f64),
-        other => Err(format!("expected PDF number, got {other:?}")),
+        other => Err(format!("expected PDF number, got {other:?}").into()),
     }
 }
 
@@ -373,13 +312,13 @@ fn page_id(document: &Document, page_number: u32) -> Result<ObjectId> {
         .get_pages()
         .get(&page_number)
         .copied()
-        .ok_or_else(|| format!("page {page_number} does not exist"))
+        .ok_or_else(|| format!("page {page_number} does not exist").into())
 }
 
 fn cloned_page_resources(document: &Document, page: ObjectId) -> Result<Dictionary> {
     match inherited_optional(document, page, b"Resources") {
         Some(Object::Dictionary(dictionary)) => Ok(dictionary),
-        Some(other) => Err(format!("page Resources is not a dictionary: {other:?}")),
+        Some(other) => Err(format!("page Resources is not a dictionary: {other:?}").into()),
         None => Ok(Dictionary::new()),
     }
 }
@@ -395,7 +334,8 @@ fn nested_dictionary(
             other => Err(format!(
                 "{} resource is not a dictionary: {other:?}",
                 String::from_utf8_lossy(key)
-            )),
+            )
+            .into()),
         },
         Err(_) => Ok(Dictionary::new()),
     }
@@ -531,13 +471,14 @@ fn escape_pdf_text(text: &str) -> String {
         .replace(')', "\\)")
 }
 
-fn apply_manifest(resolved: &ResolvedManifest) -> Result<ApplyReport> {
+fn apply_manifest(resolved: &ResolvedManifest) -> Result<PacketReport> {
     let source_before = sha256(&resolved.source)?;
     if let Some(expected) = &resolved.manifest.expected_source_sha256 {
         if &source_before != expected {
             return Err(format!(
                 "source sha256 mismatch: expected {expected}, got {source_before}"
-            ));
+            )
+            .into());
         }
     }
     let inspection = inspect_pdf(&resolved.source)?;
@@ -546,11 +487,13 @@ fn apply_manifest(resolved: &ResolvedManifest) -> Result<ApplyReport> {
             return Err(format!(
                 "source page count mismatch: expected {expected}, got {}",
                 inspection.page_count
-            ));
+            )
+            .into());
         }
     }
     if let Some(parent) = resolved.output.parent() {
-        fs::create_dir_all(parent).map_err(|error| format!("{}: {error}", parent.display()))?;
+        fs::create_dir_all(parent)
+            .map_err(|error| other(format!("{}: {error}", parent.display())))?;
     }
 
     let mut document = Document::load(&resolved.source)
@@ -611,36 +554,22 @@ fn apply_manifest(resolved: &ResolvedManifest) -> Result<ApplyReport> {
         .output
         .parent()
         .ok_or_else(|| "output has no parent directory".to_string())?;
-    let mut temporary =
-        tempfile::NamedTempFile::new_in(parent).map_err(|error| error.to_string())?;
-    document
-        .save_to(temporary.as_file_mut())
-        .map_err(|error| error.to_string())?;
-    temporary
-        .as_file_mut()
-        .flush()
-        .map_err(|error| error.to_string())?;
-    temporary
-        .as_file()
-        .sync_all()
-        .map_err(|error| error.to_string())?;
+    let mut temporary = tempfile::NamedTempFile::new_in(parent).map_err(other)?;
+    document.save_to(temporary.as_file_mut()).map_err(other)?;
+    temporary.as_file_mut().flush().map_err(other)?;
+    temporary.as_file().sync_all().map_err(other)?;
     temporary
         .persist(&resolved.output)
-        .map_err(|error| error.error.to_string())?;
+        .map_err(|error| other(error.error))?;
     if sha256(&resolved.source)? != source_before {
-        return Err("source PDF changed while applying manifest".to_string());
+        return Err("source PDF changed while applying manifest"
+            .to_string()
+            .into());
     }
-    let report = verify_manifest(resolved)?;
-    Ok(ApplyReport {
-        source_sha256: report.source_sha256,
-        output_sha256: report.output_sha256,
-        output: resolved.output.clone(),
-        page_count: report.page_count,
-        operations: report.operations_verified,
-    })
+    verify_manifest(resolved)
 }
 
-fn verify_manifest(resolved: &ResolvedManifest) -> Result<VerifyReport> {
+fn verify_manifest(resolved: &ResolvedManifest) -> Result<PacketReport> {
     let source = inspect_pdf(&resolved.source)?;
     let output = inspect_pdf(&resolved.output)?;
     if let Some(expected) = &resolved.manifest.expected_source_sha256 {
@@ -648,7 +577,8 @@ fn verify_manifest(resolved: &ResolvedManifest) -> Result<VerifyReport> {
             return Err(format!(
                 "source sha256 mismatch: expected {expected}, got {}",
                 source.sha256
-            ));
+            )
+            .into());
         }
     }
     if let Some(expected) = resolved.manifest.expected_page_count {
@@ -656,40 +586,33 @@ fn verify_manifest(resolved: &ResolvedManifest) -> Result<VerifyReport> {
             return Err(format!(
                 "output page count mismatch: expected {expected}, got {}",
                 output.page_count
-            ));
+            )
+            .into());
         }
     }
     if source.page_count != output.page_count {
         return Err(format!(
             "page count changed: source {}, output {}",
             source.page_count, output.page_count
-        ));
+        )
+        .into());
     }
     for (source_page, output_page) in source.pages.iter().zip(&output.pages) {
         if (source_page.width_points - output_page.width_points).abs() > 0.01
             || (source_page.height_points - output_page.height_points).abs() > 0.01
             || source_page.rotation != output_page.rotation
         {
-            return Err(format!(
-                "page {} dimensions or rotation changed",
-                source_page.page
-            ));
+            return Err(format!("page {} dimensions or rotation changed", source_page.page).into());
         }
     }
     if let Some(minimum) = resolved.manifest.min_output_bytes {
         if output.bytes < minimum {
-            return Err(format!(
-                "output is too small: {} < {minimum} bytes",
-                output.bytes
-            ));
+            return Err(format!("output is too small: {} < {minimum} bytes", output.bytes).into());
         }
     }
     if let Some(maximum) = resolved.manifest.max_output_bytes {
         if output.bytes > maximum {
-            return Err(format!(
-                "output is too large: {} > {maximum} bytes",
-                output.bytes
-            ));
+            return Err(format!("output is too large: {} > {maximum} bytes", output.bytes).into());
         }
     }
 
@@ -709,86 +632,82 @@ fn verify_manifest(resolved: &ResolvedManifest) -> Result<VerifyReport> {
             return Err(format!(
                 "operation {} marker is missing on page {target_page}",
                 index + 1
-            ));
+            )
+            .into());
         }
         if matches!(operation, Operation::Image { .. }) {
             let resource_name = format!("DPImg{}", index + 1);
             let resources = cloned_page_resources(&document, page)?;
             let xobjects = nested_dictionary(&document, &resources, b"XObject")?;
             if xobjects.get(resource_name.as_bytes()).is_err() {
-                return Err(format!("operation {} image resource is missing", index + 1));
+                return Err(format!("operation {} image resource is missing", index + 1).into());
             }
         }
     }
-    Ok(VerifyReport {
+    Ok(PacketReport {
+        source_file: resolved.source.clone(),
         source_sha256: source.sha256,
+        output_file: resolved.output.clone(),
         output_sha256: output.sha256,
         output_bytes: output.bytes,
         page_count: output.page_count,
-        operations_verified: resolved.manifest.operations.len(),
+        operation_count: resolved.manifest.operations.len(),
     })
 }
 
-fn render_pdf(args: RenderArgs) -> Result<()> {
-    if !(72..=600).contains(&args.dpi) {
-        return Err("--dpi must be between 72 and 600".to_string());
-    }
-    if args.prefix.is_empty()
-        || !args
-            .prefix
-            .chars()
-            .all(|character| character.is_ascii_alphanumeric() || matches!(character, '-' | '_'))
-    {
-        return Err("--prefix may contain only ASCII letters, digits, '-' and '_'".to_string());
-    }
-    inspect_pdf(&args.pdf)?;
-    fs::create_dir_all(&args.out_dir)
-        .map_err(|error| format!("{}: {error}", args.out_dir.display()))?;
-    for entry in fs::read_dir(&args.out_dir).map_err(|error| error.to_string())? {
-        let entry = entry.map_err(|error| error.to_string())?;
+fn render_pdf(pdf: &Path, output_dir: &Path, prefix: &str, dpi: u32) -> Result<RenderReport> {
+    inspect_pdf(pdf)?;
+    fs::create_dir_all(output_dir)
+        .map_err(|error| other(format!("{}: {error}", output_dir.display())))?;
+    for entry in fs::read_dir(output_dir).map_err(other)? {
+        let entry = entry.map_err(other)?;
         let name = entry.file_name();
         let name = name.to_string_lossy();
-        if rendered_page_number(&name, &args.prefix).is_some() {
-            fs::remove_file(entry.path()).map_err(|error| error.to_string())?;
+        if rendered_page_number(&name, prefix).is_some() {
+            fs::remove_file(entry.path()).map_err(other)?;
         }
     }
-    let output_prefix = args.out_dir.join(&args.prefix);
+    let output_prefix = output_dir.join(prefix);
     let status = Command::new("pdftoppm")
         .arg("-png")
         .arg("-r")
-        .arg(args.dpi.to_string())
-        .arg(&args.pdf)
+        .arg(dpi.to_string())
+        .arg(pdf)
         .arg(&output_prefix)
         .status()
-        .map_err(|error| format!("failed to run pdftoppm: {error}"))?;
+        .map_err(|error| other(format!("failed to run pdftoppm: {error}")))?;
     if !status.success() {
-        return Err(format!("pdftoppm exited with {status}"));
+        return Err(format!("pdftoppm exited with {status}").into());
     }
-    let mut rendered = fs::read_dir(&args.out_dir)
-        .map_err(|error| error.to_string())?
+    let mut rendered = fs::read_dir(output_dir)
+        .map_err(other)?
         .filter_map(|entry| entry.ok())
         .filter_map(|entry| {
             let name = entry.file_name();
-            let page = rendered_page_number(&name.to_string_lossy(), &args.prefix)?;
+            let page = rendered_page_number(&name.to_string_lossy(), prefix)?;
             Some((page, entry.path()))
         })
         .collect::<Vec<_>>();
     rendered.sort_by_key(|(page, _)| *page);
     if rendered.is_empty() {
-        return Err("pdftoppm produced no PNG pages".to_string());
+        return Err("pdftoppm produced no PNG pages".to_string().into());
     }
+    let mut pages = Vec::with_capacity(rendered.len());
     for (page, source) in &rendered {
-        let destination = args.out_dir.join(format!("{}-{page:03}.png", args.prefix));
+        let destination = output_dir.join(format!("{prefix}-{page:03}.png"));
         if source != &destination {
-            fs::rename(source, destination).map_err(|error| error.to_string())?;
+            fs::rename(source, &destination).map_err(other)?;
         }
+        pages.push(RenderedPage {
+            page: *page,
+            image_file: destination,
+        });
     }
-    println!(
-        "rendered {} page(s) into {}",
-        rendered.len(),
-        args.out_dir.display()
-    );
-    Ok(())
+    Ok(RenderReport {
+        output_dir: output_dir.to_path_buf(),
+        page_count: pages.len(),
+        pages,
+    })
 }
 
 fn rendered_page_number(name: &str, prefix: &str) -> Option<u32> {
@@ -878,7 +797,7 @@ mod tests {
         };
         let report = apply_manifest(&resolved).unwrap();
         assert_eq!(report.page_count, 1);
-        assert_eq!(report.operations, 2);
+        assert_eq!(report.operation_count, 2);
         assert_eq!(fs::read(&resolved.source).unwrap(), source_before);
         verify_manifest(&resolved).unwrap();
 
@@ -925,6 +844,7 @@ mod tests {
         assert!(
             load_manifest(&manifest_path)
                 .unwrap_err()
+                .to_string()
                 .contains("source and output")
         );
     }

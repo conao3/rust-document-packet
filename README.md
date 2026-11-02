@@ -4,25 +4,44 @@ PDF 原本を変更せず、検査・ページ画像化・画像/テキストの
 
 ## Commands
 
+入力は AWS CLI と同じ文法で受ける: `document-packet [global options] <command> <subcommand> [--parameter value ...]`。
+
 ```sh
-document-packet inspect --pdf input.pdf --json
-document-packet render --pdf input.pdf --out-dir .claude-dev/task/pages --dpi 144
-document-packet apply --manifest .claude-dev/task/document-packet.json
-document-packet verify --manifest .claude-dev/task/document-packet.json
+document-packet pdf describe-pdf --pdf-file input.pdf
+document-packet pdf render-pages --pdf-file input.pdf --output-dir .claude-dev/task/pages --dpi 144
+document-packet manifest apply-manifest --manifest-file .claude-dev/task/document-packet.json
+document-packet manifest verify-manifest --manifest-file .claude-dev/task/document-packet.json
 ```
 
-`apply` は既存 PDF の page tree と内容を保ち、指定ページへ透明 PNG/JPEG と Helvetica の ASCII text を追加する。source/output が同じ manifest は拒否する。完了時に source hash が変わっていないこと、page count・MediaBox・rotation、各 operation marker/resource、サイズ条件を `verify` する。`render` は Poppler (`pdftoppm`) で全ページを PNG 化する。
+| command | subcommand | parameters | 出力 |
+|---|---|---|---|
+| `pdf` | `describe-pdf` | `--pdf-file` | `PdfFile`, `Sha256`, `Bytes`, `PageCount`, `Pages[].{Page, WidthPoints, HeightPoints, Rotation}` |
+| `pdf` | `render-pages` | `--pdf-file`, `--output-dir`, `--prefix` (既定 `page`), `--dpi` (既定 144、72〜600) | `OutputDir`, `PageCount`, `Pages[].{Page, ImageFile}` |
+| `manifest` | `apply-manifest` | `--manifest-file` | `SourceFile`, `SourceSha256`, `OutputFile`, `OutputSha256`, `OutputBytes`, `PageCount`, `OperationCount` |
+| `manifest` | `verify-manifest` | `--manifest-file` | `apply-manifest` と同じ |
+
+`apply-manifest` は既存 PDF の page tree と内容を保ち、指定ページへ透明 PNG/JPEG と Helvetica の ASCII text を追加する。source/output が同じ manifest は拒否する。完了時に source hash が変わっていないこと、page count・MediaBox・rotation、各 operation marker/resource、サイズ条件を `verify-manifest` と同じ手順で検査する。`render-pages` は Poppler (`pdftoppm`) で全ページを `<prefix>-NNN.png` に PNG 化する。
+
+### 共通の文法
+
+- グローバルオプション: `--output json|text|table` (既定 `json`)、`--query <JMESPath>`、`--debug`、`--version`。どの位置に置いてもよい。
+- `help` は各階層で使える: `document-packet help`、`document-packet pdf help`、`document-packet pdf describe-pdf help`。
+- パラメータはすべて `--kebab-case` の名前付き。値の先頭が `file://` なら、そのファイルの中身 (末尾の改行 1 つを除く) を値として読む。
+- `--cli-input-json '{"PdfFile": "input.pdf"}'` (または `file://input.json`) で全パラメータを PascalCase のキーで渡せる。コマンドラインで指定した値が優先する。
+- `--generate-cli-skeleton input|output` で入力 (`--cli-input-json` 用) と出力の雛形を JSON で出す。
+- 出力のキーは PascalCase。`--query 'Pages[0].WidthPoints' --output text` のように取り出す。
+- 終了コード: 0 成功、252 コマンドの文法・パラメータの誤り、254 処理対象側の誤り (PDF・manifest が読めない、hash・ページ構造・サイズの不一致、`pdftoppm` の失敗)、255 それ以外 (出力の書き込み失敗、`pdftoppm` が起動できない等)。
 
 ## Manifest
 
-パスは manifest 所在ディレクトリ基準。PDF 座標は左下原点・point 単位。
+manifest はファイル形式で、キーは snake_case。パスは manifest 所在ディレクトリ基準。PDF 座標は左下原点・point 単位。
 
 ```json
 {
   "schema": 1,
   "source": "../../projects/example/contract.pdf",
   "output": "../../projects/example/contract-signed.pdf",
-  "expected_source_sha256": "<document-packet inspect の値>",
+  "expected_source_sha256": "<document-packet pdf describe-pdf の Sha256>",
   "expected_page_count": 12,
   "min_output_bytes": 1000,
   "max_output_bytes": 20000000,
