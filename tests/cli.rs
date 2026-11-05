@@ -94,7 +94,7 @@ fn describe_pdf_prints_pascal_case_json() {
 }
 
 #[test]
-fn apply_and_verify_manifest_with_query_and_text_output() {
+fn apply_and_verify_manifest_with_text_output() {
     let directory = tempfile::tempdir().unwrap();
     let sha256 = packet(directory.path());
     let applied = run_json(
@@ -119,68 +119,26 @@ fn apply_and_verify_manifest_with_query_and_text_output() {
             "verify-manifest",
             "--manifest-file",
             "manifest.json",
-            "--query",
-            "[PageCount, OperationCount]",
         ],
     );
     assert_eq!(code, 0);
-    assert_eq!(stdout, "1\t2\n");
+    assert!(
+        stdout.starts_with(&format!("source.pdf\t{sha256}\tout/signed.pdf\t")),
+        "{stdout}"
+    );
+    assert!(stdout.ends_with("\t1\t2\n"), "{stdout}");
 }
 
 #[test]
-fn cli_input_json_reads_file_and_command_line_wins() {
+fn file_prefix_reads_parameter_values() {
     let directory = tempfile::tempdir().unwrap();
     create_pdf(&directory.path().join("source.pdf"));
-    fs::write(
-        directory.path().join("input.json"),
-        r#"{"PdfFile": "missing.pdf"}"#,
-    )
-    .unwrap();
-    let (code, _, _) = run(
-        directory.path(),
-        &[
-            "pdf",
-            "describe-pdf",
-            "--cli-input-json",
-            "file://input.json",
-        ],
-    );
-    assert_eq!(code, 254);
+    fs::write(directory.path().join("pdf-file.txt"), "source.pdf\n").unwrap();
     let described = run_json(
         directory.path(),
-        &[
-            "pdf",
-            "describe-pdf",
-            "--cli-input-json",
-            "file://input.json",
-            "--pdf-file",
-            "source.pdf",
-        ],
+        &["pdf", "describe-pdf", "--pdf-file", "file://pdf-file.txt"],
     );
     assert_eq!(described["PdfFile"], "source.pdf");
-}
-
-#[test]
-fn generate_cli_skeleton_lists_parameters_and_output() {
-    let directory = tempfile::tempdir().unwrap();
-    let input = run_json(
-        directory.path(),
-        &["pdf", "render-pages", "--generate-cli-skeleton", "input"],
-    );
-    assert_eq!(
-        input,
-        json!({"PdfFile": "", "OutputDir": "", "Prefix": "page", "Dpi": 144})
-    );
-    let output = run_json(
-        directory.path(),
-        &[
-            "manifest",
-            "verify-manifest",
-            "--generate-cli-skeleton",
-            "output",
-        ],
-    );
-    assert_eq!(output["OperationCount"], 0);
 }
 
 #[test]
@@ -204,7 +162,6 @@ fn exit_codes_separate_syntax_and_target_errors() {
     for arguments in [
         vec!["inspect", "--pdf", "source.pdf"],
         vec!["pdf", "describe-pdf"],
-        vec!["pdf", "describe-pdf", "--cli-input-json", r#"{"Pdf": "x"}"#],
         vec![
             "pdf",
             "render-pages",
@@ -214,14 +171,6 @@ fn exit_codes_separate_syntax_and_target_errors() {
             "pages",
             "--dpi",
             "10",
-        ],
-        vec![
-            "--query",
-            "Pages[0",
-            "pdf",
-            "describe-pdf",
-            "--pdf-file",
-            "source.pdf",
         ],
     ] {
         let (code, _, stderr) = run(directory.path(), &arguments);

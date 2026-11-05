@@ -24,12 +24,10 @@ document-packet manifest verify-manifest --manifest-file .claude-dev/task/docume
 
 ### 共通の文法
 
-- グローバルオプション: `--output json|text|table` (既定 `json`)、`--query <JMESPath>`、`--debug`、`--version`。どの位置に置いてもよい。
+- グローバルオプション: `--output json|text|table` (既定 `json`)、`--debug`、`--version`。どの位置に置いてもよい。
 - `help` は各階層で使える: `document-packet help`、`document-packet pdf help`、`document-packet pdf describe-pdf help`。
 - パラメータはすべて `--kebab-case` の名前付き。値の先頭が `file://` なら、そのファイルの中身 (末尾の改行 1 つを除く) を値として読む。
-- `--cli-input-json '{"PdfFile": "input.pdf"}'` (または `file://input.json`) で全パラメータを PascalCase のキーで渡せる。コマンドラインで指定した値が優先する。
-- `--generate-cli-skeleton input|output` で入力 (`--cli-input-json` 用) と出力の雛形を JSON で出す。
-- 出力のキーは PascalCase。`--query 'Pages[0].WidthPoints' --output text` のように取り出す。
+- 出力のキーは PascalCase。値は `document-packet pdf describe-pdf --pdf-file input.pdf | jq -r '.Pages[0].WidthPoints'` のように取り出す。
 - 終了コード: 0 成功、252 コマンドの文法・パラメータの誤り、254 処理対象側の誤り (PDF・manifest が読めない、hash・ページ構造・サイズの不一致、`pdftoppm` の失敗)、255 それ以外 (出力の書き込み失敗、`pdftoppm` が起動できない等)。
 
 ## Manifest

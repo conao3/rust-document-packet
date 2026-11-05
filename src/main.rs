@@ -95,7 +95,7 @@ fn default_font_size() -> f64 {
     10.0
 }
 
-#[derive(Debug, Serialize, Clone, Default)]
+#[derive(Debug, Serialize, Clone)]
 #[serde(rename_all = "PascalCase")]
 struct PdfInspection {
     pdf_file: PathBuf,
@@ -105,7 +105,7 @@ struct PdfInspection {
     pages: Vec<PageInspection>,
 }
 
-#[derive(Debug, Serialize, Clone, Default)]
+#[derive(Debug, Serialize, Clone)]
 #[serde(rename_all = "PascalCase")]
 struct PageInspection {
     page: u32,
@@ -114,7 +114,7 @@ struct PageInspection {
     rotation: i64,
 }
 
-#[derive(Debug, Serialize, Default)]
+#[derive(Debug, Serialize)]
 #[serde(rename_all = "PascalCase")]
 struct RenderReport {
     output_dir: PathBuf,
@@ -122,14 +122,14 @@ struct RenderReport {
     pages: Vec<RenderedPage>,
 }
 
-#[derive(Debug, Serialize, Default)]
+#[derive(Debug, Serialize)]
 #[serde(rename_all = "PascalCase")]
 struct RenderedPage {
     page: u32,
     image_file: PathBuf,
 }
 
-#[derive(Debug, Serialize, Default)]
+#[derive(Debug, Serialize)]
 #[serde(rename_all = "PascalCase")]
 struct PacketReport {
     source_file: PathBuf,

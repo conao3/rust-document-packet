@@ -1,13 +1,11 @@
 use std::{ffi::OsString, fs, path::PathBuf};
 
-use clap::parser::ValueSource;
-use clap::{ArgAction, ArgMatches, Args, CommandFactory, Parser, Subcommand, ValueEnum};
+use clap::{ArgMatches, Args, CommandFactory, Parser, Subcommand, ValueEnum};
 use serde::Serialize;
-use serde_json::{Map, Value};
+use serde_json::Value;
 
 use crate::{
-    Error, PacketReport, PageInspection, PdfInspection, RenderReport, RenderedPage, Result,
-    apply_manifest, inspect_pdf, load_manifest, render_pdf, verify_manifest,
+    Error, Result, apply_manifest, inspect_pdf, load_manifest, render_pdf, verify_manifest,
 };
 
 #[derive(Parser)]
@@ -21,8 +19,6 @@ use crate::{
 struct Cli {
     #[arg(long, global = true, value_enum, default_value_t = OutputFormat::Json, help = "Output format")]
     output: OutputFormat,
-    #[arg(long, global = true, value_name = "JMESPATH", value_parser = parse_query, help = "JMESPath expression applied to the output")]
-    query: Option<String>,
     #[arg(long, global = true, help = "Print debug logs to stderr")]
     debug: bool,
     #[command(subcommand)]
@@ -34,12 +30,6 @@ enum OutputFormat {
     Json,
     Text,
     Table,
-}
-
-#[derive(Clone, Copy, ValueEnum)]
-enum SkeletonKind {
-    Input,
-    Output,
 }
 
 #[derive(Subcommand)]
@@ -67,30 +57,9 @@ enum ManifestCommands {
 }
 
 #[derive(Args)]
-struct InputArgs {
-    #[arg(
-        long,
-        value_name = "JSON",
-        value_parser = parse_value::<String>,
-        help = "Read all parameters from JSON with PascalCase keys (file:// reads a file)"
-    )]
-    cli_input_json: Option<String>,
-    #[arg(
-        long,
-        value_enum,
-        num_args = 0..=1,
-        default_missing_value = "input",
-        help = "Print a JSON skeleton of the input parameters or the output"
-    )]
-    generate_cli_skeleton: Option<SkeletonKind>,
-}
-
-#[derive(Args)]
 struct DescribePdfArgs {
     #[arg(long, value_name = "PATH", value_parser = parse_value::<PathBuf>, help = "PDF to inspect")]
     pdf_file: PathBuf,
-    #[command(flatten)]
-    input: InputArgs,
 }
 
 #[derive(Args)]
@@ -113,8 +82,6 @@ struct RenderPagesArgs {
     prefix: String,
     #[arg(long, default_value = "144", value_parser = parse_dpi, help = "Resolution, 72 to 600")]
     dpi: u32,
-    #[command(flatten)]
-    input: InputArgs,
 }
 
 #[derive(Args)]
@@ -126,8 +93,6 @@ struct ManifestArgs {
         help = "Manifest JSON; relative paths inside it resolve from its directory"
     )]
     manifest_file: PathBuf,
-    #[command(flatten)]
-    input: InputArgs,
 }
 
 fn read_value(raw: &str) -> std::result::Result<String, String> {
@@ -169,12 +134,6 @@ fn parse_prefix(raw: &str) -> std::result::Result<String, String> {
     Ok(prefix)
 }
 
-fn parse_query(raw: &str) -> std::result::Result<String, String> {
-    let query = read_value(raw)?;
-    jmespath::compile(&query).map_err(|error| error.to_string())?;
-    Ok(query)
-}
-
 pub(crate) fn main() -> i32 {
     match run(std::env::args_os().collect()) {
         Ok(()) => 0,
@@ -198,38 +157,14 @@ fn run(argv: Vec<OsString>) -> Result<()> {
         })
         .collect::<Result<Vec<_>>>()?;
     rewrite_help(&mut argv);
-    let lenient = match Cli::command()
-        .ignore_errors(true)
-        .try_get_matches_from(&argv)
-    {
-        Ok(matches) => matches,
-        Err(error) => return clap_exit(error),
-    };
-    let debug = lenient.get_flag("debug");
-    if let Some((command, leaf, matches)) = leaf_matches(&lenient) {
-        if let Ok(Some(kind)) = matches.try_get_one::<SkeletonKind>("generate_cli_skeleton") {
-            let skeleton = match kind {
-                SkeletonKind::Input => input_skeleton(command, leaf),
-                SkeletonKind::Output => output_skeleton(leaf)?,
-            };
-            return print_json(&skeleton);
-        }
-        if let Ok(Some(input)) = matches.try_get_one::<String>("cli_input_json") {
-            argv.extend(cli_input_arguments(command, leaf, matches, input)?);
-        }
-    }
-    if debug {
-        eprintln!("debug: argv {argv:?}");
-    }
     let cli = match Cli::try_parse_from(&argv) {
         Ok(cli) => cli,
         Err(error) => return clap_exit(error),
     };
+    if cli.debug {
+        eprintln!("debug: argv {argv:?}");
+    }
     let value = execute(cli.command)?;
-    let value = match &cli.query {
-        Some(query) => apply_query(query, &value)?,
-        None => value,
-    };
     match cli.output {
         OutputFormat::Json => print_json(&value),
         OutputFormat::Text => {
@@ -268,23 +203,6 @@ fn leaf_matches(matches: &ArgMatches) -> Option<(&str, &str, &ArgMatches)> {
     Some((command, leaf, matches))
 }
 
-fn leaf_command(command: &str, leaf: &str) -> clap::Command {
-    Cli::command()
-        .find_subcommand(command)
-        .and_then(|command| command.find_subcommand(leaf))
-        .cloned()
-        .expect("subcommand exists in the clap definition")
-}
-
-fn is_parameter(argument: &clap::Arg) -> bool {
-    !argument.is_global_set()
-        && argument.get_long().is_some()
-        && !matches!(
-            argument.get_id().as_str(),
-            "help" | "version" | "cli_input_json" | "generate_cli_skeleton"
-        )
-}
-
 fn pascal_case(kebab: &str) -> String {
     kebab
         .split('-')
@@ -296,97 +214,6 @@ fn pascal_case(kebab: &str) -> String {
             }
         })
         .collect()
-}
-
-fn input_skeleton(command: &str, leaf: &str) -> Value {
-    let mut skeleton = Map::new();
-    for argument in leaf_command(command, leaf).get_arguments() {
-        if !is_parameter(argument) {
-            continue;
-        }
-        let long = argument.get_long().unwrap();
-        let value = match argument.get_default_values().first() {
-            Some(default) => {
-                let default = default.to_string_lossy();
-                serde_json::from_str(&default).unwrap_or(Value::String(default.into_owned()))
-            }
-            None if matches!(argument.get_action(), ArgAction::SetTrue) => Value::Bool(false),
-            None if matches!(argument.get_action(), ArgAction::Append) => {
-                Value::Array(vec![Value::String(String::new())])
-            }
-            None => Value::String(String::new()),
-        };
-        skeleton.insert(pascal_case(long), value);
-    }
-    Value::Object(skeleton)
-}
-
-fn output_skeleton(leaf: &str) -> Result<Value> {
-    let pdf = PdfInspection {
-        pages: vec![PageInspection::default()],
-        ..PdfInspection::default()
-    };
-    let render = RenderReport {
-        pages: vec![RenderedPage::default()],
-        ..RenderReport::default()
-    };
-    match leaf {
-        "describe-pdf" => to_value(&pdf),
-        "render-pages" => to_value(&render),
-        "apply-manifest" | "verify-manifest" => to_value(&PacketReport::default()),
-        other => Err(Error::Other(format!("no output skeleton for {other}"))),
-    }
-}
-
-fn cli_input_arguments(
-    command: &str,
-    leaf: &str,
-    matches: &ArgMatches,
-    input: &str,
-) -> Result<Vec<String>> {
-    let input: Value = serde_json::from_str(input)
-        .map_err(|error| Error::Usage(format!("--cli-input-json: {error}")))?;
-    let Value::Object(input) = input else {
-        return Err(Error::Usage(
-            "--cli-input-json must be a JSON object".to_string(),
-        ));
-    };
-    let definition = leaf_command(command, leaf);
-    let mut arguments = Vec::new();
-    for (key, value) in input {
-        let argument = definition
-            .get_arguments()
-            .filter(|argument| is_parameter(argument))
-            .find(|argument| pascal_case(argument.get_long().unwrap()) == key)
-            .ok_or_else(|| {
-                Error::Usage(format!(
-                    "--cli-input-json: unknown parameter {key} for {command} {leaf}"
-                ))
-            })?;
-        if matches.value_source(argument.get_id().as_str()) == Some(ValueSource::CommandLine) {
-            continue;
-        }
-        let long = argument.get_long().unwrap();
-        match value {
-            Value::Null => {}
-            Value::Bool(true) => arguments.push(format!("--{long}")),
-            Value::Bool(false) => arguments.push(format!("--no-{long}")),
-            Value::Array(items) => {
-                for item in items {
-                    arguments.push(format!("--{long}={}", scalar_argument(item)));
-                }
-            }
-            other => arguments.push(format!("--{long}={}", scalar_argument(other))),
-        }
-    }
-    Ok(arguments)
-}
-
-fn scalar_argument(value: Value) -> String {
-    match value {
-        Value::String(text) => text,
-        other => other.to_string(),
-    }
 }
 
 fn execute(command: Commands) -> Result<Value> {
@@ -417,15 +244,6 @@ fn print_json(value: &Value) -> Result<()> {
         serde_json::to_string_pretty(value).map_err(|error| Error::Other(error.to_string()))?
     );
     Ok(())
-}
-
-fn apply_query(query: &str, value: &Value) -> Result<Value> {
-    let expression =
-        jmespath::compile(query).map_err(|error| Error::Usage(format!("--query: {error}")))?;
-    let result = expression
-        .search(value)
-        .map_err(|error| Error::Usage(format!("--query: {error}")))?;
-    to_value(&*result)
 }
 
 fn is_scalar(value: &Value) -> bool {
