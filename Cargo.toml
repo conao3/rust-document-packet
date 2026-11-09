@@ -3,7 +3,7 @@ name = "document-packet"
 version = "0.1.0"
 edition = "2021"
 description = "Reproducible PDF inspection, rendering, overlays, and verification"
-license = "MIT"
+license = "Apache-2.0"
 repository = "https://github.com/conao3/rust-document-packet"
 
 [[bin]]

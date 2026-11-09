@@ -5,7 +5,7 @@
 <p align="center"><strong>Overlay images and text on a PDF from a JSON manifest, then verify the output</strong></p>
 
 <p align="center">
-  <a href="Cargo.toml"><img src="https://img.shields.io/badge/license-MIT-blue" alt="License: MIT"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/github/license/conao3/rust-document-packet" alt="License: Apache-2.0"></a>
   <a href="Cargo.toml"><img src="https://img.shields.io/badge/Rust-2021_edition-orange?logo=rust" alt="Rust 2021 edition"></a>
   <a href="https://github.com/conao3/rust-document-packet/stargazers"><img src="https://img.shields.io/github/stars/conao3/rust-document-packet?style=flat" alt="GitHub stars"></a>
 </p>
@@ -128,4 +128,4 @@ nix develop -c cargo test
 
 ## License
 
-MIT (`Cargo.toml` の `license`)。
+Apache-2.0。全文は [LICENSE](LICENSE)。

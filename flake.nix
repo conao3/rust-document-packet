@@ -33,7 +33,7 @@
             meta = {
               description = "Build and verify reproducible PDF document packets";
               homepage = "https://github.com/conao3/rust-document-packet";
-              license = pkgs.lib.licenses.mit;
+              license = pkgs.lib.licenses.asl20;
               mainProgram = "document-packet";
               platforms = pkgs.lib.platforms.unix;
             };
