@@ -11,9 +11,9 @@
 </p>
 
 <p align="center">
-  <a href="#install">Install</a> ·
-  <a href="#commands">Commands</a> ·
-  <a href="#manifest">Manifest</a> ·
+  <a href="#install">Install</a> |
+  <a href="#commands">Commands</a> |
+  <a href="#manifest">Manifest</a> |
   <a href="#development">Development</a>
 </p>
 
